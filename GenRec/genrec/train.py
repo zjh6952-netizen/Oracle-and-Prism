@@ -251,6 +251,7 @@ def main():
     new_lr = float(cfg(config, "new_component_lr", 5e-4))
     freeze_backbone_epochs = int(cfg(config, "freeze_backbone_epochs", 3))
     early_stopping_patience = int(cfg(config, "early_stopping_patience", 5))
+    max_epoch = int(config.max_epoch)
 
     logger.info(
         "Param groups: %d pretrained (lr=%.1e), %d new (lr=%.1e)",
@@ -271,11 +272,24 @@ def main():
         {"params": new_params, "lr": new_lr, "weight_decay": config.weight_decay},
     ]
     optimizer = AdamW(params=param_groups)
-    schedule = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=int(train_batch_num * config.warmup_epoch),
-        num_training_steps=int(train_batch_num * config.max_epoch),
-    )
+    phase2_epochs = max(0, max_epoch - freeze_backbone_epochs)
+    phase2_total_steps = train_batch_num * phase2_epochs
+    schedule = None
+    if phase2_total_steps > 0:
+        phase2_warmup_steps = int(train_batch_num * config.warmup_epoch)
+        phase2_warmup_steps = min(phase2_warmup_steps, max(0, phase2_total_steps - 1))
+        schedule = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=phase2_warmup_steps,
+            num_training_steps=phase2_total_steps,
+        )
+        logger.info(
+            "Scheduler: cosine starts after freeze phase. phase2_steps=%d, warmup_steps=%d",
+            phase2_total_steps,
+            phase2_warmup_steps,
+        )
+    else:
+        logger.info("Scheduler: skipped because freeze_backbone_epochs >= max_epoch")
 
     amp_mode = str(cfg(config, "amp_mode", "none")).lower()
     if use_cuda and amp_mode == "none" and torch.cuda.is_bf16_supported():
@@ -302,7 +316,7 @@ def main():
     eval_length_penalty = float(cfg(config, "eval_length_penalty", 1.0))
     eval_min_new_tokens = int(cfg(config, "eval_min_new_tokens", 0))
 
-    for epoch in range(1, config.max_epoch + 1):
+    for epoch in range(1, max_epoch + 1):
         # --- Phase transition: unfreeze BART backbone ---
         if freeze_backbone_epochs > 0 and epoch == freeze_backbone_epochs + 1:
             for param in model.parameters():
@@ -358,7 +372,8 @@ def main():
                 scaler.update()
             else:
                 optimizer.step()
-            schedule.step()
+            if schedule is not None and epoch > freeze_backbone_epochs:
+                schedule.step()
             optimizer.zero_grad(set_to_none=True)
             grad_accum_counter = 0
             progress.update(1)

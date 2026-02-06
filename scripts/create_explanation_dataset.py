@@ -6,6 +6,7 @@ from transformers import T5ForConditionalGeneration, T5Tokenizer
 import torch
 import csv # 使用更底层的csv库来实现内存高效的追加写入
 import re
+import json
 
 # ==============================================================================
 # 1. 配置部分 (CONFIGURATION)
@@ -36,6 +37,7 @@ MAX_EXPLANATION_TOKENS = 80
 MAX_REPEAT_RATIO = 0.55
 MIN_SOURCE_OVERLAP = 0.12
 MIN_QUALITY_SCORE = 0.35
+PROGRESS_SAVE_EVERY = 100
 
 # 这是你应该在“Yelp版本”的数据生成脚本中使用的最终Prompt
 
@@ -184,6 +186,7 @@ def main():
     for split, filepath in INPUT_FILES.items():
         print(f"\n--- 开始创建解释数据集: {split} set (内存优化模式) ---")
         output_path = os.path.join(OUTPUT_DIR, f"explanation_dataset_{split}.csv")
+        progress_path = output_path + ".progress.json"
         split_kept = 0
         split_skipped = 0
         
@@ -195,24 +198,39 @@ def main():
             continue
 
         start_index = 0
-        # --- 核心修改：不再把旧文件读入内存，只用它来确定起始位置 ---
-        if os.path.exists(output_path):
+        if os.path.exists(progress_path):
             try:
-                # 只读取一小部分来获取行数，避免加载整个文件
-                processed_df_len = pd.read_csv(output_path, usecols=[0]).shape[0]
-                start_index = processed_df_len
-                print(f"发现已存在的输出文件，其中包含 {start_index} 条数据。将从该位置开始追加。")
-            except (pd.errors.EmptyDataError, FileNotFoundError):
+                with open(progress_path, "r", encoding="utf-8") as pf:
+                    progress_state = json.load(pf)
+                start_index = int(progress_state.get("next_raw_index", 0))
+                print(f"发现进度文件，将从原始行号 {start_index} 继续处理。")
+            except Exception:
                 start_index = 0
-                print("发现空的或损坏的输出文件，将从头开始创建。")
+                print("进度文件损坏，将从头开始处理。")
+        elif os.path.exists(output_path):
+            # 若进度文件缺失，优先从 raw_index 恢复；没有该列时只能从头开始确保正确性。
+            try:
+                existing_df = pd.read_csv(output_path, usecols=["raw_index"])
+                if len(existing_df) > 0:
+                    start_index = int(existing_df["raw_index"].max()) + 1
+                    print(f"进度文件缺失，已从 raw_index 恢复到 {start_index}。")
+            except Exception:
+                start_index = 0
+                print("进度文件缺失且输出文件不含 raw_index，将从头重新生成以避免错位。")
+
+        if start_index >= len(df):
+            print("该 split 已全部处理完成，跳过。")
+            continue
         
-        # --- 核心修改：使用'a' (append)模式和csv库进行流式写入 ---
-        with open(output_path, 'a', newline='', encoding='utf-8') as f:
+        open_mode = "a" if start_index > 0 else "w"
+        # --- 核心修改：使用流式写入 + 可恢复进度 ---
+        with open(output_path, open_mode, newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
             # 如果是新文件（或空文件），就先写入表头
             if start_index == 0:
                 writer.writerow([
+                    "raw_index",
                     "user_id",
                     "history",
                     "recommended_item",
@@ -224,35 +242,45 @@ def main():
                 ])
 
             # 循环处理剩余的数据
-            for index, row in tqdm(df.iloc[start_index:].iterrows(), initial=start_index, total=len(df), desc=f"Generating for {split}"):
-                history = decode_history(str(row['history']))
-                target = decode_history(str(row['target']))
+            for raw_idx in tqdm(range(start_index, len(df)), initial=start_index, total=len(df), desc=f"Generating for {split}"):
+                row = df.iloc[raw_idx]
+                history = decode_history(str(row["history"]))
+                target = decode_history(str(row["target"]))
                 user_id = row.get('user_id', 1)
                 
                 prompt_text = EXPLANATION_PROMPT_TEMPLATE.format(history=history, item_to_explain=target)
                 explanation_text, metrics = generate_explanation(prompt_text, history, target)
                 score, overlap_ratio, repeat_ratio, token_len = metrics
-                
-                # --- 核心修改：生成一条，就立刻写入磁盘 ---
+
+                should_write = True
                 if "Error:" in explanation_text or explanation_text.strip() == "":
-                    split_skipped += 1
-                    continue
+                    should_write = False
+                if should_write and not is_good_explanation(score, overlap_ratio, repeat_ratio, token_len):
+                    should_write = False
 
-                if not is_good_explanation(score, overlap_ratio, repeat_ratio, token_len):
+                if should_write:
+                    writer.writerow([
+                        raw_idx,
+                        user_id,
+                        history,
+                        target,
+                        explanation_text,
+                        round(score, 4),
+                        round(overlap_ratio, 4),
+                        round(repeat_ratio, 4),
+                        token_len
+                    ])
+                    split_kept += 1
+                else:
                     split_skipped += 1
-                    continue
 
-                writer.writerow([
-                    user_id,
-                    history,
-                    target,
-                    explanation_text,
-                    round(score, 4),
-                    round(overlap_ratio, 4),
-                    round(repeat_ratio, 4),
-                    token_len
-                ])
-                split_kept += 1
+                if raw_idx % PROGRESS_SAVE_EVERY == 0:
+                    with open(progress_path, "w", encoding="utf-8") as pf:
+                        json.dump({"next_raw_index": raw_idx + 1}, pf)
+
+            # 确保本 split 结束后持久化到末尾
+            with open(progress_path, "w", encoding="utf-8") as pf:
+                json.dump({"next_raw_index": len(df)}, pf)
 
         print(f"\n🎉 {split} set 处理完毕！最终数据集已完整保存到: {output_path}")
         print(f"保留样本: {split_kept} | 过滤样本: {split_skipped}")
