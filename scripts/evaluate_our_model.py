@@ -11,13 +11,11 @@ from transformers import AutoTokenizer
 
 
 # ==============================================================================
-# 1. 配置部分 (CONFIGURATION)
 # ==============================================================================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"使用设备: {DEVICE}")
+print(f"Using device: {DEVICE}")
 PROJECT_ROOT = "/root/autodl-tmp/GenRec_Explainer_Project"
 
-# !! 关键 !!: 请将 'YYYYMMDD_HHMMSS' 替换为你真实的训练输出文件夹的时间戳
 YOUR_MODEL_WEIGHTS_PATH = os.path.join(PROJECT_ROOT, "results", "20250918_165141", "best_model.mdl")
 YOUR_MODEL_BASE_PATH = os.path.join(PROJECT_ROOT, "models", "bart-base", "facebook", "bart-base")
 
@@ -53,12 +51,12 @@ def _prepare_imports():
 
 def load_your_bart_model(base_path, weights_path):
     """
-    加载自定义 GenerativeModel（内部是你改造过的 BartForConditionalGeneration）。
-    strict=True 保证权重结构必须匹配，避免 silently ignore。
+    Load the customized GenerativeModel (internally your modified BartForConditionalGeneration).
+    strict=True enforces exact weight-structure matching and avoids silent mismatch.
     """
-    print("--- 正在加载你微调好的自定义BART模型 ---")
-    print(f"  - 基础结构: {base_path}")
-    print(f"  - 微调权重: {weights_path}")
+    print("--- Loading your finetuned custom BART model ---")
+    print(f"  - Base architecture: {base_path}")
+    print(f"  - Finetuned weights: {weights_path}")
     try:
         Dataset, GenerativeModel, move_to_cuda = _prepare_imports()
         tokenizer = AutoTokenizer.from_pretrained(base_path, local_files_only=LOCAL_FILES_ONLY, add_prefix_space=True)
@@ -72,14 +70,14 @@ def load_your_bart_model(base_path, weights_path):
         state_dict = torch.load(weights_path, map_location=DEVICE)
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
         if missing_keys or unexpected_keys:
-            raise RuntimeError(f"权重不匹配: missing={missing_keys}, unexpected={unexpected_keys}")
+            raise RuntimeError(f"Weight mismatch: missing={missing_keys}, unexpected={unexpected_keys}")
         model = model.to(DEVICE)
         model.eval()
-        print("你的模型(GenRec-E, 自定义结构)加载成功。")
+        print("Your model (custom architecture) loaded successfully.")
         return model, tokenizer, Dataset, move_to_cuda
     except Exception as e:
-        print("!!! 加载你的模型失败! 请确保路径正确且训练已完成。")
-        print(f"错误: {e}")
+        print("!!! Failed to load your model. Ensure paths are correct and training is completed.")
+        print(f"Error: {e}")
         return None, None, None, None
 
 
@@ -90,25 +88,25 @@ def main():
     if not your_model:
         return
 
-    print("\n--- 正在从本地加载评估指标 ---")
+    print("\n--- Loading evaluation metrics from local files ---")
     try:
         rouge = evaluate.load(ROUGE_SCRIPT_PATH)
-        print("✓ ROUGE评估指标加载成功。")
+        print("ROUGE metric loaded successfully.")
     except Exception as e:
-        print(f"!!! 加载ROUGE失败: {e}")
+        print(f"!!! Failed to load ROUGE: {e}")
         return
 
     try:
         bertscore = evaluate.load(BERTSCORE_SCRIPT_PATH)
-        print("✓ BERTScore评估指标加载成功。")
+        print("BERTScore metric loaded successfully.")
     except Exception as e:
-        print(f"!!! 加载BERTScore失败: {e}")
-        print("将仅使用ROUGE进行评估")
+        print(f"!!! Failed to load BERTScore: {e}")
+        print("Evaluation will continue with ROUGE only.")
         bertscore = None
 
-    print("\n--- 正在加载测试数据并构建评估集 ---")
+    print("\n--- Loading test data and building evaluation set ---")
     if not os.path.exists(TEST_DATA_PATH):
-        print(f"!!! 错误: 测试集文件未找到! '{TEST_DATA_PATH}'")
+        print(f"!!! Error: test dataset not found: '{TEST_DATA_PATH}'")
         return
 
     test_set = Dataset(
@@ -119,7 +117,7 @@ def main():
         filter_pseudo_labels=False,
     )
     if len(test_set) == 0:
-        print("!!! 测试集为空，无法评估。")
+        print("!!! Test set is empty; evaluation cannot proceed.")
         return
     test_loader = DataLoader(
         test_set,
@@ -127,10 +125,10 @@ def main():
         shuffle=False,
         collate_fn=test_set.collate_fn,
     )
-    print(f"测试样本数: {len(test_set)}")
+    print(f"Number of test samples: {len(test_set)}")
 
     results = []
-    print(f"\n--- 正在为你的模型 (GenRec-E) 生成 {len(test_set)} 条解释 ---")
+    print(f"\n--- Generating {len(test_set)} explanations with your model ---")
     with torch.no_grad():
         for batch in tqdm(test_loader, total=len(test_loader)):
             gpu_batch = move_to_cuda(batch) if DEVICE == "cuda" else batch
@@ -161,13 +159,13 @@ def main():
     references = results_df["golden"].tolist()
     predictions = results_df["prediction"].tolist()
 
-    print("\n--- 正在计算自动化评估指标 ---")
-    print("正在计算ROUGE...")
+    print("\n--- Computing automatic evaluation metrics ---")
+    print("Computing ROUGE...")
     rouge_scores = rouge.compute(predictions=predictions, references=references)
 
     bert_scores = None
     if bertscore:
-        print("正在计算BERTScore (可能需要几分钟，请耐心等待)...")
+        print("Computing BERTScore (this may take a few minutes)...")
         try:
             bert_scores = bertscore.compute(
                 predictions=predictions,
@@ -175,12 +173,12 @@ def main():
                 lang="en",
                 device=DEVICE,
             )
-            print("✓ BERTScore计算完成")
+            print("BERTScore computation finished")
         except Exception as e:
-            print(f"!!! BERTScore计算失败: {e}")
+            print(f"!!! BERTScore computation failed: {e}")
             bert_scores = None
 
-    print("\n--- 你的模型 (GenRec-E) 评估结果 ---")
+    print("\n--- Evaluation Results: Your Model ---")
     print(f"{'Metric':<15} | {'Score':<10}")
     print("-" * 30)
     print(f"{'ROUGE-1':<15} | {rouge_scores.get('rouge1', 0.0):.4f}")
@@ -192,8 +190,8 @@ def main():
 
     results_df.to_csv(RESULTS_PATH, index=False)
     results_df.to_csv(HUMAN_EVAL_PATH, index=False)
-    print(f"\n详细生成结果已保存到: {RESULTS_PATH}")
-    print("\n🎉 你的模型评估完成！")
+    print(f"\nDetailed generation results saved to: {RESULTS_PATH}")
+    print("\nYour model evaluation is complete.")
 
 
 if __name__ == "__main__":

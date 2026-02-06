@@ -4,12 +4,11 @@ import pandas as pd
 from tqdm import tqdm
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 import torch
-import csv # 使用更底层的csv库来实现内存高效的追加写入
+import csv
 import re
 import json
 
 # ==============================================================================
-# 1. 配置部分 (CONFIGURATION)
 # ==============================================================================
 
 PROJECT_ROOT = "/root/autodl-tmp/GenRec_Explainer_Project"
@@ -24,14 +23,12 @@ INPUT_FILES = {
 MAX_INPUT_LENGTH = 512
 MAX_NEW_TOKENS = 150
 
-# 生成多个候选后做重排，显著减少教师“胡说”和“复读”
 NUM_CANDIDATES = 4
 SAMPLING_TOP_P = 0.9
 SAMPLING_TEMPERATURE = 0.8
 REPETITION_PENALTY = 1.2
 NO_REPEAT_NGRAM_SIZE = 3
 
-# 伪标签质量过滤阈值
 MIN_EXPLANATION_TOKENS = 6
 MAX_EXPLANATION_TOKENS = 80
 MAX_REPEAT_RATIO = 0.55
@@ -39,7 +36,6 @@ MIN_SOURCE_OVERLAP = 0.12
 MIN_QUALITY_SCORE = 0.35
 PROGRESS_SAVE_EVERY = 100
 
-# 与学生模型训练输入保持完全一致，避免蒸馏时出现 prompt 分布偏移
 EXPLANATION_PROMPT_TEMPLATE = """Task: Write one faithful recommendation explanation.
 
 Rules:
@@ -53,12 +49,11 @@ Recommended Item: {item}
 Explanation:"""
 
 # ==============================================================================
-# 2. 模型加载与推理函数 (MODEL & INFERENCE) - RTX 4090 优化
 # ==============================================================================
 
-print("--- 初始化教师模型 (RTX 4090 - BF16 高性能模式) ---")
+print("--- Initializing teacher model ---")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"使用的设备: {DEVICE}")
+print(f"Using device: {DEVICE}")
 
 try:
     tokenizer = T5Tokenizer.from_pretrained(TEACHER_MODEL_PATH)
@@ -67,10 +62,10 @@ try:
         torch_dtype=torch.bfloat16,
         device_map={"": 0}
     )
-    print("教师模型以BF16高性能模式加载成功。")
+    print("Teacher model loaded successfully in BF16 mode.")
 except Exception as e:
-    print(f"!!! 加载教师模型失败! 请检查路径 '{TEACHER_MODEL_PATH}' 是否正确且完整。")
-    print(f"错误信息: {e}")
+    print(f"!!! Failed to load teacher model. Check whether path '{TEACHER_MODEL_PATH}' is correct and complete.")
+    print(f"Error details: {e}")
     exit()
 
 def decode_history(raw_text):
@@ -92,8 +87,8 @@ def tokenize_words(text):
 
 def compute_quality(explanation, history, target):
     """
-    质量分 = 来源重合度 + 多样性 - 复读惩罚
-    目的：过滤幻觉/模板化重复解释。
+    Quality score = source overlap + diversity - repetition penalty.
+    Used to filter hallucinated or templated repetitive explanations.
     """
     tokens = tokenize_words(explanation)
     if not tokens:
@@ -123,7 +118,7 @@ def is_good_explanation(score, overlap_ratio, repeat_ratio, token_len):
 
 
 def generate_explanation(prompt, history, target):
-    """使用多候选重排生成解释，降低幻觉和复读。"""
+    """Generate an explanation via candidate reranking to reduce hallucination and repetition."""
     try:
         inputs = tokenizer(
             prompt, 
@@ -153,7 +148,6 @@ def generate_explanation(prompt, history, target):
                 best_text = cand
                 best_metrics = metrics
 
-        # 若采样候选质量太差，用 beam-search 再兜底一次。
         if not is_good_explanation(*best_metrics):
             beam_outputs = model.generate(
                 **inputs,
@@ -172,20 +166,18 @@ def generate_explanation(prompt, history, target):
 
         return best_text, best_metrics
     except Exception as e:
-        print(f"\n!!! 模型推理时发生错误: {e}")
+        print(f"\n!!! Model inference error: {e}")
         return "Error: Generation failed.", (-1.0, 0.0, 1.0, 0)
 
 # ==============================================================================
-# 3. 主程序 (MAIN LOGIC) - 内存优化版
 # ==============================================================================
 
 def main():
     global_kept = 0
     global_skipped = 0
 
-    # 循环处理训练集和测试集
     for split, filepath in INPUT_FILES.items():
-        print(f"\n--- 开始创建解释数据集: {split} set (内存优化模式) ---")
+        print(f"\n--- Building explanation dataset: {split} set (memory-optimized mode) ---")
         output_path = os.path.join(OUTPUT_DIR, f"explanation_dataset_{split}.csv")
         progress_path = output_path + ".progress.json"
         split_kept = 0
@@ -193,9 +185,9 @@ def main():
         
         try:
             df = pd.read_csv(filepath)
-            print(f"成功读取 {len(df)} 条原始数据。")
+            print(f"Loaded {len(df)} raw rows successfully.")
         except FileNotFoundError:
-            print(f"!!! 错误: 原始数据文件未找到! 请检查路径 '{filepath}'")
+            print(f"!!! Error: raw data file not found. Check path '{filepath}'")
             continue
 
         start_index = 0
@@ -204,31 +196,28 @@ def main():
                 with open(progress_path, "r", encoding="utf-8") as pf:
                     progress_state = json.load(pf)
                 start_index = int(progress_state.get("next_raw_index", 0))
-                print(f"发现进度文件，将从原始行号 {start_index} 继续处理。")
+                print(f"Progress file found. Resuming from raw row index {start_index}.")
             except Exception:
                 start_index = 0
-                print("进度文件损坏，将从头开始处理。")
+                print("Progress file is corrupted. Restarting from the beginning.")
         elif os.path.exists(output_path):
-            # 若进度文件缺失，优先从 raw_index 恢复；没有该列时只能从头开始确保正确性。
             try:
                 existing_df = pd.read_csv(output_path, usecols=["raw_index"])
                 if len(existing_df) > 0:
                     start_index = int(existing_df["raw_index"].max()) + 1
-                    print(f"进度文件缺失，已从 raw_index 恢复到 {start_index}。")
+                    print(f"Progress file missing. Recovered start index {start_index} from raw_index.")
             except Exception:
                 start_index = 0
-                print("进度文件缺失且输出文件不含 raw_index，将从头重新生成以避免错位。")
+                print("Progress file missing and output has no raw_index. Regenerating from start to avoid misalignment.")
 
         if start_index >= len(df):
-            print("该 split 已全部处理完成，跳过。")
+            print("This split is already fully processed. Skipping.")
             continue
         
         open_mode = "a" if start_index > 0 else "w"
-        # --- 核心修改：使用流式写入 + 可恢复进度 ---
         with open(output_path, open_mode, newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
-            # 如果是新文件（或空文件），就先写入表头
             if start_index == 0:
                 writer.writerow([
                     "raw_index",
@@ -242,7 +231,6 @@ def main():
                     "explanation_tokens"
                 ])
 
-            # 循环处理剩余的数据
             for raw_idx in tqdm(range(start_index, len(df)), initial=start_index, total=len(df), desc=f"Generating for {split}"):
                 row = df.iloc[raw_idx]
                 history = decode_history(str(row["history"]))
@@ -279,18 +267,17 @@ def main():
                     with open(progress_path, "w", encoding="utf-8") as pf:
                         json.dump({"next_raw_index": raw_idx + 1}, pf)
 
-            # 确保本 split 结束后持久化到末尾
             with open(progress_path, "w", encoding="utf-8") as pf:
                 json.dump({"next_raw_index": len(df)}, pf)
 
-        print(f"\n🎉 {split} set 处理完毕！最终数据集已完整保存到: {output_path}")
-        print(f"保留样本: {split_kept} | 过滤样本: {split_skipped}")
+        print(f"\n{split} set finished. Final dataset saved to: {output_path}")
+        print(f"Kept samples: {split_kept} | Filtered samples: {split_skipped}")
         global_kept += split_kept
         global_skipped += split_skipped
 
-    print("\n=== 全部数据生成完成 ===")
-    print(f"总保留样本: {global_kept}")
-    print(f"总过滤样本: {global_skipped}")
+    print("\n=== All dataset generation finished ===")
+    print(f"Total kept samples: {global_kept}")
+    print(f"Total filtered samples: {global_skipped}")
 
 if __name__ == "__main__":
     main()

@@ -2,11 +2,10 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig
 import re
-# 确保从正确的本地路径导入魔改的BART
 from genrec.bart.model import BartForConditionalGeneration
 
 class GenerativeModel(nn.Module):
-    def __init__(self, config, tokenizer, **kwargs): # 使用**kwargs增加灵活性
+    def __init__(self, config, tokenizer, **kwargs):
         super().__init__()
         self.tokenizer = tokenizer
         self.model_config = AutoConfig.from_pretrained(config.model_name, local_files_only=True)
@@ -20,7 +19,7 @@ class GenerativeModel(nn.Module):
     
     def forward(self, batch):
         """
-        此函数保持原样，以确保与train.py的训练循环100%兼容。
+        Kept unchanged to remain fully compatible with the training loop in train.py.
         """
         outputs = self.model(
             input_ids=batch.enc_idxs,
@@ -47,9 +46,8 @@ class GenerativeModel(nn.Module):
         min_new_tokens=0,
     ):
         """
-        【最终修复版】
-        为解释任务重写的predict方法。
-        我们强制只为每个输入返回1个最佳输出，以确保数量匹配。
+        Final fixed version of predict for explanation generation.
+        Force exactly one best output per input to keep counts aligned.
         """
         was_training = self.training
         self.eval()
@@ -69,13 +67,11 @@ class GenerativeModel(nn.Module):
                 no_repeat_ngram_size=no_repeat_ngram_size,
                 length_penalty=length_penalty,
                 min_new_tokens=min_new_tokens,
-                # --- 【核心修复】我们只要求返回1个序列！ ---
                 num_return_sequences=1, 
                 return_dict_in_generate=True,
                 **enc_kwargs
             )
 
-        # 解码所有生成的序列
         generated_explanations = self.tokenizer.batch_decode(
             outputs['sequences'], 
             skip_special_tokens=True,

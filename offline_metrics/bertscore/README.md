@@ -1,6 +1,6 @@
 ---
 title: BERT Score
-emoji: 🤗 
+emoji:  
 colorFrom: blue
 colorTo: red
 sdk: gradio

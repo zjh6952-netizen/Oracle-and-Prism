@@ -56,7 +56,7 @@ def build_rouge_scorer(config, logger):
     try:
         import evaluate
     except Exception as err:
-        logger.warning("evaluate 导入失败，将跳过ROUGE评估: %s", err)
+        logger.warning("Failed to import evaluate; ROUGE evaluation will be skipped: %s", err)
         return None
 
     rouge_path = resolve_path(
@@ -65,12 +65,12 @@ def build_rouge_scorer(config, logger):
     try:
         return evaluate.load(rouge_path)
     except Exception as err:
-        logger.warning("本地ROUGE加载失败(%s)，尝试默认rouge: %s", rouge_path, err)
+        logger.warning("Failed to load local ROUGE (%s); trying default 'rouge': %s", rouge_path, err)
 
     try:
         return evaluate.load("rouge")
     except Exception as err:
-        logger.warning("默认rouge加载失败: %s", err)
+        logger.warning("Failed to load default 'rouge': %s", err)
         return None
 
 
@@ -82,7 +82,7 @@ def get_explanation_score(epoch, references, predictions, rouge_scorer, logger):
     flat_references = [item for sublist in references for item in sublist]
     if len(predictions) != len(flat_references):
         logger.warning(
-            "预测(%s)与参考(%s)数量不匹配，将按较短长度截断。",
+            "Prediction count (%s) and reference count (%s) mismatch; truncating to the shorter length.",
             len(predictions),
             len(flat_references),
         )
@@ -94,7 +94,7 @@ def get_explanation_score(epoch, references, predictions, rouge_scorer, logger):
         result = rouge_scorer.compute(predictions=predictions, references=flat_references)
         rouge_l_score = float(result.get("rougeL", 0.0))
     except Exception as err:
-        logger.warning("计算ROUGE分数失败: %s", err)
+        logger.warning("Failed to compute ROUGE score: %s", err)
         rouge_l_score = 0.0
 
     post_fix = {"Epoch": epoch, "ROUGE-L": f"{rouge_l_score:.4f}"}
@@ -194,7 +194,7 @@ def main():
     train_set = Dataset(tokenizer, config.max_length, config.train_file, config.max_output_length, **dataset_kwargs)
     dev_set = Dataset(tokenizer, config.max_length, config.dev_file, config.max_output_length, **dataset_kwargs)
     if len(train_set) == 0 or len(dev_set) == 0:
-        raise ValueError("训练集或验证集为空，请检查数据路径和CSV格式。")
+        raise ValueError("Train set or validation set is empty. Check data paths and CSV format.")
 
     train_num_workers = int(cfg(config, "train_num_workers", 4 if use_cuda else 0))
     eval_num_workers = int(cfg(config, "eval_num_workers", 2 if use_cuda else 0))

@@ -5,10 +5,8 @@ import torch
 from collections import namedtuple
 import pandas as pd
 
-# 获取一个日志记录器
 logger = logging.getLogger(__name__)
 
-# 定义GenBatch结构
 gen_batch_fields = [
     'input_text', 'target_text', 'enc_idxs', 'enc_attn', 
     'dec_idxs', 'dec_attn', 'lbl_idxs', 'raw_lbl_idxs', 
@@ -112,18 +110,18 @@ class Dataset(torch.utils.data.Dataset):
         return self.instances[index]
 
     def load_explanation_data(self):
-        logger.info(f"为解释任务加载数据 (BART兼容模式): {self.path}")
+        logger.info(f"Loading data for explanation task (BART-compatible mode): {self.path}")
         try:
-            logger.info("--> 正在使用 Pandas 读取大型CSV文件，请耐心等待...")
+            logger.info("--> Reading large CSV with Pandas. This may take a while...")
             df = pd.read_csv(self.path)
-            logger.info(f"--> CSV文件读取完毕！共 {len(df)} 行。现在开始格式化...")
+            logger.info(f"--> CSV read complete. {len(df)} rows loaded. Formatting now...")
         except FileNotFoundError:
-            logger.error(f"!!! 致命错误: 数据文件未找到，路径: {self.path}")
+            logger.error(f"Fatal error: data file not found at path: {self.path}")
             self.instances = []
             return
 
         if "explanation" not in df.columns:
-            logger.error("!!! 致命错误: 输入数据缺少 explanation 列。")
+            logger.error("Fatal error: input data is missing the 'explanation' column.")
             self.instances = []
             return
 
@@ -177,9 +175,9 @@ class Dataset(torch.utils.data.Dataset):
                 "user_id": user_id,
                 "item_id": item_id,
             })
-        logger.info(f"成功加载并格式化了 {len(self.instances)} 条有效的解释样本。")
+        logger.info(f"Loaded and formatted {len(self.instances)} valid explanation samples.")
         if self.filter_pseudo_labels:
-            logger.info(f"伪标签质量过滤掉 {filtered_count} 条样本。")
+            logger.info(f"Pseudo-label quality filtering removed {filtered_count} samples.")
 
     def collate_fn(self, batch):
         source_texts = [x["source_text"] for x in batch]
@@ -214,13 +212,12 @@ class Dataset(torch.utils.data.Dataset):
         enc_attrs = torch.zeros(batch_size, seq_len, 1, dtype=torch.long)
 
         # ===================================================================
-        # --- 【核心修复】将target_text包装成二维列表，以匹配train.py评估循环的期望 ---
         # ===================================================================
         formatted_target_texts = [[txt] for txt in target_texts]
 
         return GenBatch(
             input_text=source_texts,
-            target_text=formatted_target_texts, # <-- 使用包装后的二维列表！
+            target_text=formatted_target_texts,
             enc_idxs=source_tokenized["input_ids"],
             enc_attn=source_tokenized["attention_mask"],
             lbl_idxs=label_ids,
@@ -229,7 +226,6 @@ class Dataset(torch.utils.data.Dataset):
             enc_attrs=enc_attrs
         )
     
-    # 保留空函数定义
     def load_pretrain_data(self): pass
     def load_data(self): pass
     def pretrain_collate_fn(self, batch): pass
