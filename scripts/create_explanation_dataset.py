@@ -39,17 +39,10 @@ MIN_SOURCE_OVERLAP = 0.12
 MIN_QUALITY_SCORE = 0.35
 PROGRESS_SAVE_EVERY = 100
 
-# 这是你应该在“Yelp版本”的数据生成脚本中使用的最终Prompt
-
-EXPLANATION_PROMPT_TEMPLATE = """Generate a short and faithful explanation for the following local business recommendation.
-The explanation MUST be based ONLY on the user's visit history. Do NOT invent reasons.
-
-Context:
-- User Visit History: {history}
-- Recommended Business: {item_to_explain}
-
-Explanation:
-"""
+# 与学生模型训练输入保持完全一致，避免蒸馏时出现 prompt 分布偏移
+EXPLANATION_PROMPT_TEMPLATE = """User History: {history}
+Recommended Item: {item_to_explain}
+Explanation:"""
 
 # ==============================================================================
 # 2. 模型加载与推理函数 (MODEL & INFERENCE) - RTX 4090 优化
