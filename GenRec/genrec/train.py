@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import tqdm
 from torch.utils.data import DataLoader
-from transformers import AdamW, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AdamW, AutoTokenizer, get_cosine_schedule_with_warmup
 
 from data import Dataset
 from model import GenerativeModel
@@ -235,9 +235,43 @@ def main():
         logger.info("Loaded model from %s", model_path)
     model.to(device)
 
-    param_groups = [{"params": model.parameters(), "lr": config.learning_rate, "weight_decay": config.weight_decay}]
+    # --- Discriminative LR: separate pretrained BART params from new components ---
+    new_component_keywords = [
+        "user_whole_embeddings", "item_whole_embeddings",
+        "user_item_proj", "user_item_gate",
+    ]
+    pretrained_params = []
+    new_params = []
+    for name, param in model.named_parameters():
+        if any(kw in name for kw in new_component_keywords):
+            new_params.append(param)
+        else:
+            pretrained_params.append(param)
+
+    new_lr = float(cfg(config, "new_component_lr", 5e-4))
+    freeze_backbone_epochs = int(cfg(config, "freeze_backbone_epochs", 3))
+    early_stopping_patience = int(cfg(config, "early_stopping_patience", 5))
+
+    logger.info(
+        "Param groups: %d pretrained (lr=%.1e), %d new (lr=%.1e)",
+        len(pretrained_params), config.learning_rate,
+        len(new_params), new_lr,
+    )
+    logger.info("Freeze backbone for first %d epochs", freeze_backbone_epochs)
+
+    # Phase 1: freeze BART backbone, only train new components
+    if freeze_backbone_epochs > 0:
+        for name, param in model.named_parameters():
+            if not any(kw in name for kw in new_component_keywords):
+                param.requires_grad = False
+        logger.info("Phase 1: BART backbone frozen")
+
+    param_groups = [
+        {"params": pretrained_params, "lr": config.learning_rate, "weight_decay": config.weight_decay},
+        {"params": new_params, "lr": new_lr, "weight_decay": config.weight_decay},
+    ]
     optimizer = AdamW(params=param_groups)
-    schedule = get_linear_schedule_with_warmup(
+    schedule = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(train_batch_num * config.warmup_epoch),
         num_training_steps=int(train_batch_num * config.max_epoch),
@@ -259,6 +293,7 @@ def main():
     logger.info("Start training ...")
     summarizer_step = 0
     best_dev_score = -1.0
+    no_improve_count = 0
     save_each_epoch = bool(cfg(config, "save_each_epoch", True))
     log_every = int(cfg(config, "log_every", 100))
     eval_num_beams = int(cfg(config, "eval_num_beams", 5))
@@ -268,6 +303,12 @@ def main():
     eval_min_new_tokens = int(cfg(config, "eval_min_new_tokens", 0))
 
     for epoch in range(1, config.max_epoch + 1):
+        # --- Phase transition: unfreeze BART backbone ---
+        if freeze_backbone_epochs > 0 and epoch == freeze_backbone_epochs + 1:
+            for param in model.parameters():
+                param.requires_grad = True
+            logger.info("Phase 2: BART backbone unfrozen at epoch %d", epoch)
+
         logger.info(log_path)
         logger.info("Epoch %s", epoch)
         progress = tqdm.tqdm(total=train_batch_num, ncols=90, desc=f"Train {epoch}")
@@ -363,6 +404,7 @@ def main():
 
         if current_score > best_dev_score:
             best_dev_score = current_score
+            no_improve_count = 0
             logger.info("New best dev ROUGE-L=%.4f at epoch %s", best_dev_score, epoch)
             torch.save(model.state_dict(), best_model_path)
             logger.info("Saved best model to %s", best_model_path)
@@ -371,6 +413,18 @@ def main():
                 for ref_list, pred in zip(all_references, all_predictions):
                     ref = ref_list[0] if ref_list else ""
                     fw.writelines(f"GOLD: {ref}\nPRED: {pred}\n\n")
+        else:
+            no_improve_count += 1
+            logger.info(
+                "No improvement for %d epoch(s) (patience=%d)",
+                no_improve_count, early_stopping_patience,
+            )
+            if no_improve_count >= early_stopping_patience:
+                logger.info(
+                    "Early stopping at epoch %d (best ROUGE-L=%.4f)",
+                    epoch, best_dev_score,
+                )
+                break
 
     logger.info(log_path)
     logger.info("Done! Best dev ROUGE-L=%.4f", best_dev_score)
