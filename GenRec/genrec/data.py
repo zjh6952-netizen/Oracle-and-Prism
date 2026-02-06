@@ -18,6 +18,17 @@ GenBatch = namedtuple('GenBatch', field_names=gen_batch_fields, defaults=[None] 
 
 USER_VOCAB_SIZE = 331845
 ITEM_VOCAB_SIZE = 103912
+PROMPT_TEMPLATE = """Task: Write one faithful recommendation explanation.
+
+Rules:
+1) Use only facts from User History.
+2) Do not invent preferences, events, or attributes.
+3) If history evidence is weak, say uncertainty briefly.
+4) Keep it concise (1-2 sentences).
+
+User History: {history}
+Recommended Item: {item}
+Explanation:"""
 
 
 def _stable_bucket(raw_value, vocab_size):
@@ -144,9 +155,7 @@ class Dataset(torch.utils.data.Dataset):
             user_id = _stable_bucket(getattr(row, "user_id", 1), self.user_vocab_size)
             item_id = _stable_bucket(item, self.item_vocab_size)
 
-            # 【修复】简化输入格式,移除Instruction前缀,避免模型学会复制格式
-            # 使用更简洁的提示模板,让模型专注于生成解释
-            source_text = f"User History: {history}\nRecommended Item: {item}\nExplanation:"
+            source_text = PROMPT_TEMPLATE.format(history=history, item=item)
             if self.filter_pseudo_labels:
                 score, overlap, repeat_ratio, token_len = _pseudo_label_quality(source_text, explanation)
                 if token_len < self.min_target_tokens or token_len > self.max_target_tokens:

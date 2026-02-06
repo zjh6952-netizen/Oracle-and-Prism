@@ -40,8 +40,16 @@ MIN_QUALITY_SCORE = 0.35
 PROGRESS_SAVE_EVERY = 100
 
 # 与学生模型训练输入保持完全一致，避免蒸馏时出现 prompt 分布偏移
-EXPLANATION_PROMPT_TEMPLATE = """User History: {history}
-Recommended Item: {item_to_explain}
+EXPLANATION_PROMPT_TEMPLATE = """Task: Write one faithful recommendation explanation.
+
+Rules:
+1) Use only facts from User History.
+2) Do not invent preferences, events, or attributes.
+3) If history evidence is weak, say uncertainty briefly.
+4) Keep it concise (1-2 sentences).
+
+User History: {history}
+Recommended Item: {item}
 Explanation:"""
 
 # ==============================================================================
@@ -241,7 +249,7 @@ def main():
                 target = decode_history(str(row["target"]))
                 user_id = row.get('user_id', 1)
                 
-                prompt_text = EXPLANATION_PROMPT_TEMPLATE.format(history=history, item_to_explain=target)
+                prompt_text = EXPLANATION_PROMPT_TEMPLATE.format(history=history, item=target)
                 explanation_text, metrics = generate_explanation(prompt_text, history, target)
                 score, overlap_ratio, repeat_ratio, token_len = metrics
 
