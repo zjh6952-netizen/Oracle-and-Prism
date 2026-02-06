@@ -1,0 +1,22 @@
+{
+  "gpu_device": 0,
+  "seed": 42,
+  "train_file": "/root/autodl-tmp/GenRec_Explainer_Project/data/processed/explanation_dataset_train.csv",
+  "dev_file": "/root/autodl-tmp/GenRec_Explainer_Project/data/processed/explanation_dataset_test.csv",
+  "test_file": "/root/autodl-tmp/GenRec_Explainer_Project/data/processed/explanation_dataset_test.csv",
+  "output_dir": "/root/autodl-tmp/GenRec_Explainer_Project/results",
+  "cache_dir": "/root/autodl-tmp/huggingface_cache",
+  "model_name": "/root/autodl-tmp/GenRec_Explainer_Project/models/bart-base/facebook/bart-base",
+  
+  "max_epoch": 25,
+  "warmup_epoch": 3,
+  "train_batch_size": 16,
+  "eval_batch_size": 16,
+  "accumulate_step": 2,
+  "learning_rate": 1e-5, 
+  "weight_decay": 0.01,
+  "grad_clipping": 1.0,
+  "max_length": 512,
+  "max_output_length": 150,
+  "pretrain": false
+}

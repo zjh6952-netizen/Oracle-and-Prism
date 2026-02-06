@@ -1,0 +1,33 @@
+# python
+__pycache__/
+*.py[cod]
+
+# jupyter
+.ipynb_checkpoints/
+
+# envs
+envs/
+.venv/
+venv/
+
+# data & caches
+data/
+huggingface_cache/
+
+# models / checkpoints
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# results / logs
+results/
+logs/
+wandb/
+runs/
+
+# misc
+.DS_Store
