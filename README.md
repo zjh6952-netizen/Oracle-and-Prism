@@ -51,11 +51,9 @@ Oracle-and-Prism/
 
 ## Getting Started
 
-**Requirements:** Python 3.9+, CUDA GPU with BF16/FP16 support.
+**Requirements:** Python 3.10+, CUDA GPU with BF16/FP16 support.
 
 ```bash
-git clone https://github.com/zjh6952-netizen/Oracle-and-Prism.git
-cd Oracle-and-Prism
 pip install -r requirements.txt
 ```
 
@@ -78,7 +76,6 @@ This produces `explanation_dataset_{train,test}.csv` with quality-filtered pseud
 ### 3. Student Training (Prism)
 
 ```bash
-cd GenRec
 python genrec/train.py -c config/genrec_e_movielens_config.json
 ```
 
