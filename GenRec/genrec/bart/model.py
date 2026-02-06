@@ -316,11 +316,6 @@ class BartEncoderLayer(nn.Module):
             num_heads=config.encoder_attention_heads,
             dropout=config.attention_dropout,
         )
-        self.pos_attention = BartAttention(
-            embed_dim=self.embed_dim,
-            num_heads=config.encoder_attention_heads,
-            dropout=config.attention_dropout,
-        )
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.dropout = config.dropout
         self.activation_fn = ACT2FN[config.activation_function]
@@ -566,20 +561,19 @@ class BartEncoder(BartPretrainedModel):
         self.max_source_positions = config.max_position_embeddings
         self.embed_scale = math.sqrt(embed_dim) if config.scale_embedding else 1.0
 
-        # self.item_attr_embeddings = nn.Embedding(2278, 1024)
-        # self.item_attr_embeddings = nn.Embedding(30223, 768)
-        # self.item_attr_embeddings = nn.Embedding(30223, 768)
-        self.item_attr_embeddings = nn.Embedding(30223, embed_dim)
-        # self.user_whole_embeddings = nn.Embedding(35598, 768)
-        # self.user_whole_embeddings = nn.Embedding(35599, 1024)
-        # self.user_whole_embeddings = nn.Embedding(331845, 768)
-        # self.user_whole_embeddings = nn.Embedding(331845, 768)
-        self.user_whole_embeddings = nn.Embedding(331845, embed_dim)
-        # self.item_whole_embeddings = nn.Embedding(18357, 768)
-        # self.item_whole_embeddings = nn.Embedding(18358, 1024)
-        # self.item_whole_embeddings = nn.Embedding(103912, 768)
-        # self.item_whole_embeddings = nn.Embedding(103912, 768)
-        self.item_whole_embeddings = nn.Embedding(103912, embed_dim)
+        # User/Item embeddings: use small dim (64) + projection to reduce
+        # random noise injected into pretrained BART representations.
+        self.ui_embed_dim = 64
+        self.user_whole_embeddings = nn.Embedding(331845, self.ui_embed_dim)
+        self.item_whole_embeddings = nn.Embedding(103912, self.ui_embed_dim)
+        self.user_item_proj = nn.Sequential(
+            nn.Linear(self.ui_embed_dim * 2, embed_dim),
+            nn.Tanh(),
+        )
+        # Zero-initialized gate: at training start, gate=sigmoid(0)=0.5 is
+        # still too much noise.  We use a large negative init so
+        # sigmoid(-5)≈0.007, preserving pretrained representations.
+        self.user_item_gate = nn.Parameter(torch.tensor(-5.0))
 
         if embed_tokens is not None:
             self.embed_tokens = embed_tokens
@@ -634,12 +628,6 @@ class BartEncoder(BartPretrainedModel):
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
-
-    def _calc_item_attr_embeddings(self, attrs):
-        try:
-            return self.item_attr_embeddings(attrs).mean(2)
-        except IndexError as e:
-            raise IndexError("The :obj:`bbox` coordinate values should be within 0-1000 range.") from e
 
     def forward(
         self,
@@ -723,11 +711,12 @@ class BartEncoder(BartPretrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            # attrs_embed = self._calc_item_attr_embeddings(enc_attrs)
-            user_whole_embed = self.user_whole_embeddings(enc_user_whole)
-            item_whole_embed = self.item_whole_embeddings(enc_item_whole)
-            # inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale + (user_whole_embed + item_whole_embed + attrs_embed)/math.sqrt(self.embed_dim)
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale + (user_whole_embed + item_whole_embed)/math.sqrt(self.embed_dim)
+            user_embed = self.user_whole_embeddings(enc_user_whole)   # [B, S, 64]
+            item_embed = self.item_whole_embeddings(enc_item_whole)   # [B, S, 64]
+            ui_combined = torch.cat([user_embed, item_embed], dim=-1) # [B, S, 128]
+            ui_projected = self.user_item_proj(ui_combined)           # [B, S, embed_dim]
+            gate = torch.sigmoid(self.user_item_gate)  # starts near 0, learned during training
+            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale + gate * ui_projected
 
         embed_pos = self.embed_positions(input)
 
@@ -1369,7 +1358,8 @@ class BartForConditionalGeneration(BartPretrainedModel):
 
         masked_lm_loss = None
         if labels is not None:
-            loss_fct = CrossEntropyLoss()
+            label_smoothing = getattr(self.config, "label_smoothing", 0.1)
+            loss_fct = CrossEntropyLoss(label_smoothing=label_smoothing)
             masked_lm_loss = loss_fct(lm_logits.view(-1, self.config.vocab_size), labels.view(-1))
 
         if not return_dict:

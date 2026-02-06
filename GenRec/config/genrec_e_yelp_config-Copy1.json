@@ -39,5 +39,6 @@
   "log_every": 100,
   "max_length": 512,
   "max_output_length": 150,
+  "label_smoothing": 0.1,
   "pretrain": false
 }

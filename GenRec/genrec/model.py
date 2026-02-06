@@ -10,6 +10,7 @@ class GenerativeModel(nn.Module):
         super().__init__()
         self.tokenizer = tokenizer
         self.model_config = AutoConfig.from_pretrained(config.model_name, local_files_only=True)
+        self.model_config.label_smoothing = getattr(config, "label_smoothing", 0.1)
         self.model = BartForConditionalGeneration.from_pretrained(
             config.model_name,
             config=self.model_config,

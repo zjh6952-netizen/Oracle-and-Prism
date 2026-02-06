@@ -70,6 +70,19 @@ except Exception as e:
     print(f"错误信息: {e}")
     exit()
 
+def decode_history(raw_text):
+    """Convert encoded format (\\i\\sep, \\sep, \\i, \\n) into readable text."""
+    text = str(raw_text)
+    if not text or text.lower() == "nan":
+        return ""
+    text = text.replace("\\i\\sep", " ")
+    text = text.replace("\\sep", ", ")
+    text = re.sub(r"\\i\s*[\d,\s]*", " ", text)
+    text = text.replace("\\n", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def tokenize_words(text):
     return re.findall(r"[a-zA-Z0-9]+", str(text).lower())
 
@@ -212,8 +225,8 @@ def main():
 
             # 循环处理剩余的数据
             for index, row in tqdm(df.iloc[start_index:].iterrows(), initial=start_index, total=len(df), desc=f"Generating for {split}"):
-                history = str(row['history'])
-                target = str(row['target'])
+                history = decode_history(str(row['history']))
+                target = decode_history(str(row['target']))
                 user_id = row.get('user_id', 1)
                 
                 prompt_text = EXPLANATION_PROMPT_TEMPLATE.format(history=history, item_to_explain=target)

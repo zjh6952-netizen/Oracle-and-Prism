@@ -43,6 +43,25 @@ def _stable_bucket(raw_value, vocab_size):
     return int(digest[:8], 16) % vocab_size
 
 
+def _decode_history(raw_text):
+    """Convert encoded format (e.g. 'The\\i\\seppurchase\\i\\sep...item_1\\i 274, 164\\sep...')
+    into readable natural language for BART."""
+    text = str(raw_text)
+    if not text or text.lower() == "nan":
+        return ""
+    # \i\sep is a word/token separator (acts as space)
+    text = text.replace("\\i\\sep", " ")
+    # \sep between items is an item separator
+    text = text.replace("\\sep", ", ")
+    # \i followed by numeric attribute IDs — strip the noisy numeric attrs
+    text = re.sub(r"\\i\s*[\d,\s]*", " ", text)
+    # \n is a newline
+    text = text.replace("\\n", " ")
+    # Clean up extra whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def _tokens(text):
     return re.findall(r"[a-zA-Z0-9]+", str(text).lower())
 
@@ -113,13 +132,14 @@ class Dataset(torch.utils.data.Dataset):
         for row in df.itertuples(index=False):
             history = getattr(row, "history", "")
             history = "" if pd.isna(history) else str(history)
+            history = _decode_history(history)
             if self.history_max_chars and len(history) > int(self.history_max_chars):
                 history = history[-int(self.history_max_chars):]
 
             item = ""
             if item_col is not None:
                 raw_item = getattr(row, item_col, "")
-                item = "" if pd.isna(raw_item) else str(raw_item)
+                item = "" if pd.isna(raw_item) else _decode_history(str(raw_item))
             explanation = str(getattr(row, "explanation", ""))
             user_id = _stable_bucket(getattr(row, "user_id", 1), self.user_vocab_size)
             item_id = _stable_bucket(item, self.item_vocab_size)
