@@ -1,43 +1,40 @@
-#!/bin/bash
-echo "--- GenRec-E Training Script Started (From Scratch) ---"
+#!/usr/bin/env bash
+set -euo pipefail
 
-# 定义我们环境的Python解释器的绝对路径
-PYTHON_EXECUTABLE="/root/autodl-tmp/GenRec_Explainer_Project/envs/genrec_legacy/bin/python"
+echo "--- GenRec-E Training Script Started ---"
 
-# 检查解释器是否存在
-if [ ! -f "$PYTHON_EXECUTABLE" ]; then
-    echo "!!! CRITICAL ERROR: Python executable not found. Aborting."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+GENREC_ROOT="${PROJECT_ROOT}/GenRec"
+
+PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE:-python3}"
+CONFIG_FILE_PATH="${CONFIG_FILE_PATH:-${GENREC_ROOT}/config/genrec_e_movielens_config.json}"
+PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-}"
+
+if ! command -v "${PYTHON_EXECUTABLE}" >/dev/null 2>&1; then
+    echo "!!! CRITICAL ERROR: Python executable not found: ${PYTHON_EXECUTABLE}"
     exit 1
 fi
+
+if [ ! -f "${CONFIG_FILE_PATH}" ]; then
+    echo "!!! CRITICAL ERROR: Config file not found: ${CONFIG_FILE_PATH}"
+    exit 1
+fi
+
+export PYTHONPATH="${GENREC_ROOT}:${PYTHONPATH:-}"
+cd "${GENREC_ROOT}"
+
 echo "Using Python interpreter: ${PYTHON_EXECUTABLE}"
-
-# ------------------- 核心修正！-------------------
-# 我们把 GenRec 的主目录，也就是包含 genrec/ 这个子目录的文件夹，
-# 强制地、手动地添加到Python的模块搜索路径中。
-export PYTHONPATH="/root/autodl-tmp/GenRec_Explainer_Project/GenRec"
 echo "Set PYTHONPATH to: ${PYTHONPATH}"
-# --------------------------------------------------
-
-# 我们现在可以从任何地方，用绝对路径来调用脚本，因为PYTHONPATH已经设定好了
-# 我们为了清晰，还是先进入GenRec的主目录
-cd /root/autodl-tmp/GenRec_Explainer_Project/GenRec
 echo "Current directory: $(pwd)"
-
-# 配置文件路径是相对于当前目录的
-CONFIG_FILE_PATH="config/genrec_e_movielens_config.json"
 echo "Starting training using config file: ${CONFIG_FILE_PATH}"
-    
-if [ ! -f "$CONFIG_FILE_PATH" ]; then
-    echo "!!! CRITICAL ERROR: Config file not found. Aborting."
-    exit 1
+
+CMD=("${PYTHON_EXECUTABLE}" "genrec/train.py" "-c" "${CONFIG_FILE_PATH}")
+if [ -n "${PRETRAINED_MODEL_PATH}" ]; then
+    CMD+=("-pmp" "${PRETRAINED_MODEL_PATH}")
+    echo "Using pretrained model: ${PRETRAINED_MODEL_PATH}"
 fi
 
-# 我们调用的是 genrec/ 目录下的 train.py
-${PYTHON_EXECUTABLE} genrec/train.py -c ${CONFIG_FILE_PATH}
+"${CMD[@]}"
 
-# --- 检查结果的逻辑保持不变 ---
-if [ $? -eq 0 ]; then
-    echo "--- Training finished successfully. ---"
-else
-    echo "!!! ERROR: Training script exited with an error. ---"
-fi
+echo "--- Training finished successfully. ---"

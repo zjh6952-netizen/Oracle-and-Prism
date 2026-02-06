@@ -725,7 +725,7 @@ class BartEncoder(BartPretrainedModel):
         if inputs_embeds is None:
             # attrs_embed = self._calc_item_attr_embeddings(enc_attrs)
             user_whole_embed = self.user_whole_embeddings(enc_user_whole)
-            item_whole_embed = self.user_whole_embeddings(enc_item_whole)
+            item_whole_embed = self.item_whole_embeddings(enc_item_whole)
             # inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale + (user_whole_embed + item_whole_embed + attrs_embed)/math.sqrt(self.embed_dim)
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale + (user_whole_embed + item_whole_embed)/math.sqrt(self.embed_dim)
 

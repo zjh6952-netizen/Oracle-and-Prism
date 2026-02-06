@@ -5,6 +5,7 @@ from tqdm import tqdm
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 import torch
 import csv # 使用更底层的csv库来实现内存高效的追加写入
+import re
 
 # ==============================================================================
 # 1. 配置部分 (CONFIGURATION)
@@ -20,6 +21,21 @@ INPUT_FILES = {
     "test": os.path.join(PROJECT_ROOT, "data", "raw", "yelp_sequences_test.csv")
 }
 MAX_INPUT_LENGTH = 512
+MAX_NEW_TOKENS = 150
+
+# 生成多个候选后做重排，显著减少教师“胡说”和“复读”
+NUM_CANDIDATES = 4
+SAMPLING_TOP_P = 0.9
+SAMPLING_TEMPERATURE = 0.8
+REPETITION_PENALTY = 1.2
+NO_REPEAT_NGRAM_SIZE = 3
+
+# 伪标签质量过滤阈值
+MIN_EXPLANATION_TOKENS = 6
+MAX_EXPLANATION_TOKENS = 80
+MAX_REPEAT_RATIO = 0.55
+MIN_SOURCE_OVERLAP = 0.12
+MIN_QUALITY_SCORE = 0.35
 
 # 这是你应该在“Yelp版本”的数据生成脚本中使用的最终Prompt
 
@@ -54,8 +70,44 @@ except Exception as e:
     print(f"错误信息: {e}")
     exit()
 
-def generate_explanation(prompt):
-    """使用加载好的BF16模型生成解释，并加入了安全截断。"""
+def tokenize_words(text):
+    return re.findall(r"[a-zA-Z0-9]+", str(text).lower())
+
+
+def compute_quality(explanation, history, target):
+    """
+    质量分 = 来源重合度 + 多样性 - 复读惩罚
+    目的：过滤幻觉/模板化重复解释。
+    """
+    tokens = tokenize_words(explanation)
+    if not tokens:
+        return -1.0, 0.0, 1.0, 0
+
+    src_tokens = set(tokenize_words(history) + tokenize_words(target))
+    overlap_hits = sum(1 for tok in tokens if tok in src_tokens)
+    overlap_ratio = overlap_hits / len(tokens)
+
+    unique_ratio = len(set(tokens)) / len(tokens)
+    repeat_ratio = 1.0 - unique_ratio
+
+    score = overlap_ratio * 1.8 + unique_ratio * 0.8 - repeat_ratio * 1.2
+    return score, overlap_ratio, repeat_ratio, len(tokens)
+
+
+def is_good_explanation(score, overlap_ratio, repeat_ratio, token_len):
+    if token_len < MIN_EXPLANATION_TOKENS or token_len > MAX_EXPLANATION_TOKENS:
+        return False
+    if overlap_ratio < MIN_SOURCE_OVERLAP:
+        return False
+    if repeat_ratio > MAX_REPEAT_RATIO:
+        return False
+    if score < MIN_QUALITY_SCORE:
+        return False
+    return True
+
+
+def generate_explanation(prompt, history, target):
+    """使用多候选重排生成解释，降低幻觉和复读。"""
     try:
         inputs = tokenizer(
             prompt, 
@@ -63,21 +115,64 @@ def generate_explanation(prompt):
             max_length=MAX_INPUT_LENGTH,
             truncation=True,
         ).to(DEVICE)
-        outputs = model.generate(**inputs, max_new_tokens=150, no_repeat_ngram_size=2)
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        sampled_outputs = model.generate(
+            **inputs,
+            max_new_tokens=MAX_NEW_TOKENS,
+            do_sample=True,
+            top_p=SAMPLING_TOP_P,
+            temperature=SAMPLING_TEMPERATURE,
+            num_return_sequences=NUM_CANDIDATES,
+            repetition_penalty=REPETITION_PENALTY,
+            no_repeat_ngram_size=NO_REPEAT_NGRAM_SIZE,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+        sampled_candidates = tokenizer.batch_decode(sampled_outputs, skip_special_tokens=True)
+
+        best_text = ""
+        best_metrics = (-1.0, 0.0, 1.0, 0)
+        for cand in sampled_candidates:
+            metrics = compute_quality(cand, history, target)
+            if metrics[0] > best_metrics[0]:
+                best_text = cand
+                best_metrics = metrics
+
+        # 若采样候选质量太差，用 beam-search 再兜底一次。
+        if not is_good_explanation(*best_metrics):
+            beam_outputs = model.generate(
+                **inputs,
+                max_new_tokens=MAX_NEW_TOKENS,
+                do_sample=False,
+                num_beams=5,
+                repetition_penalty=REPETITION_PENALTY,
+                no_repeat_ngram_size=NO_REPEAT_NGRAM_SIZE,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+            beam_text = tokenizer.decode(beam_outputs[0], skip_special_tokens=True)
+            beam_metrics = compute_quality(beam_text, history, target)
+            if beam_metrics[0] > best_metrics[0]:
+                best_text = beam_text
+                best_metrics = beam_metrics
+
+        return best_text, best_metrics
     except Exception as e:
         print(f"\n!!! 模型推理时发生错误: {e}")
-        return "Error: Generation failed."
+        return "Error: Generation failed.", (-1.0, 0.0, 1.0, 0)
 
 # ==============================================================================
 # 3. 主程序 (MAIN LOGIC) - 内存优化版
 # ==============================================================================
 
 def main():
+    global_kept = 0
+    global_skipped = 0
+
     # 循环处理训练集和测试集
     for split, filepath in INPUT_FILES.items():
         print(f"\n--- 开始创建解释数据集: {split} set (内存优化模式) ---")
         output_path = os.path.join(OUTPUT_DIR, f"explanation_dataset_{split}.csv")
+        split_kept = 0
+        split_skipped = 0
         
         try:
             df = pd.read_csv(filepath)
@@ -104,7 +199,16 @@ def main():
             
             # 如果是新文件（或空文件），就先写入表头
             if start_index == 0:
-                writer.writerow(["user_id", "history", "recommended_item", "explanation"])
+                writer.writerow([
+                    "user_id",
+                    "history",
+                    "recommended_item",
+                    "explanation",
+                    "quality_score",
+                    "source_overlap",
+                    "repeat_ratio",
+                    "explanation_tokens"
+                ])
 
             # 循环处理剩余的数据
             for index, row in tqdm(df.iloc[start_index:].iterrows(), initial=start_index, total=len(df), desc=f"Generating for {split}"):
@@ -113,13 +217,38 @@ def main():
                 user_id = row.get('user_id', 1)
                 
                 prompt_text = EXPLANATION_PROMPT_TEMPLATE.format(history=history, item_to_explain=target)
-                explanation_text = generate_explanation(prompt_text)
+                explanation_text, metrics = generate_explanation(prompt_text, history, target)
+                score, overlap_ratio, repeat_ratio, token_len = metrics
                 
                 # --- 核心修改：生成一条，就立刻写入磁盘 ---
-                if "Error:" not in explanation_text and explanation_text.strip() != "":
-                    writer.writerow([user_id, history, target, explanation_text])
+                if "Error:" in explanation_text or explanation_text.strip() == "":
+                    split_skipped += 1
+                    continue
+
+                if not is_good_explanation(score, overlap_ratio, repeat_ratio, token_len):
+                    split_skipped += 1
+                    continue
+
+                writer.writerow([
+                    user_id,
+                    history,
+                    target,
+                    explanation_text,
+                    round(score, 4),
+                    round(overlap_ratio, 4),
+                    round(repeat_ratio, 4),
+                    token_len
+                ])
+                split_kept += 1
 
         print(f"\n🎉 {split} set 处理完毕！最终数据集已完整保存到: {output_path}")
+        print(f"保留样本: {split_kept} | 过滤样本: {split_skipped}")
+        global_kept += split_kept
+        global_skipped += split_skipped
+
+    print("\n=== 全部数据生成完成 ===")
+    print(f"总保留样本: {global_kept}")
+    print(f"总过滤样本: {global_skipped}")
 
 if __name__ == "__main__":
     main()
